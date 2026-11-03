@@ -1,0 +1,15 @@
+The task environment, SO-101 scene/assets and scripted expert were ported from
+LeRobot-SafetyCubes supplied by the user. See sim/PORT_PROVENANCE.json for the
+source commit and file hashes. The original Apache-2.0 LICENSE is retained.
+
+The local change to sim/configs.py resolves robot assets relative to its module
+instead of the caller's working directory. Trailing XML whitespace was removed
+from the SO-101 URDF; its geometry is unchanged. The task's geometry, observations,
+actions, allowed contacts, grasp dynamics and success criteria are preserved.
+
+The diffusion policy implementation is a dependency of this repository (LeRobot)
+and retains its upstream license and attribution. No safety-loss policy class
+or differentiable safety-loss implementation is included in the active task.
+
+Model weights, data and generated videos are local artifacts, excluded from the
+source publication. A checkpoint import utility records weight provenance.

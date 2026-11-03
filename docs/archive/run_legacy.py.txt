@@ -1,0 +1,373 @@
+from __future__ import annotations
+import argparse
+import copy
+import hashlib
+import json
+import subprocess
+from pathlib import Path
+import numpy as np
+import torch
+from .runtime import bootstrap
+
+
+def write(path, value):
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(json.dumps(value, indent=2, allow_nan=False))
+    tmp.replace(path)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('command', choices=['collect', 'train', 'evaluate', 'smoke', 'collect-policy'])
+    ap.add_argument('--config', default='configs/smoke.json')
+    ap.add_argument('--output', default='artifacts/smoke')
+    args = ap.parse_args()
+    config_path = Path(args.config).resolve()
+    out = Path(args.output).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    c = json.loads(config_path.read_text())
+    root = bootstrap(c['reference'])
+    from sim.configs import EnvConfig, ExpertConfig
+    from sim.expert import ScriptedExpert
+    from .safety import MeasuredEnv
+    from .policy import Policy
+    from .data import Trajectories, frame, save_trajectory
+    torch.set_num_threads(c['threads'])
+    checkpoint = root / c['checkpoint']
+    cfg = EnvConfig(max_episode_steps=c['max_episode_steps'], terminate_on_red_contact=True)
+    cfg.scene.ee_height_ceiling = c['ceiling']
+    from dataclasses import asdict
+    write(out/'environment.json', dict(environment=asdict(cfg), expert=asdict(ExpertConfig())))
+    sets = [set(c[k]) for k in ['train_seeds', 'validation_seeds', 'eval_seeds']]
+    assert not any(sets[i] & sets[j] for i in range(3) for j in range(i)), 'Seed split leakage'
+    write(out/f'{args.command}_config.json', c)
+    if not (out/'config.json').exists():
+        write(out/'config.json', c)
+    write(out/'provenance.json', dict(reference=str(root), reference_commit=json.loads((root/'sim/PORT_PROVENANCE.json').read_text())['reference_commit'], checkpoint=str(checkpoint),
+        checkpoint_config_sha256=hashlib.sha256((checkpoint/'config.json').read_bytes()).hexdigest(),
+        torch=torch.__version__, cuda_available=torch.cuda.is_available()))
+
+    def env_new():
+        return MeasuredEnv(copy.deepcopy(cfg), c['contact_tolerance'])
+
+    def rollout(env, actor, obs, info, prefix=None):
+        frames = list(prefix or [])
+        video = []
+        for step in range(cfg.max_episode_steps):
+            action = actor(obs, info)
+            frames.append(frame(obs, action, info))
+            if step % 3 == 0:
+                video.append(obs['image'].copy())
+            obs, _, done, timeout, info = env.step(action)
+            if done or timeout:
+                break
+        return frames, info['stats'], video
+
+    def video_save(name, frames):
+        h, w = frames[0].shape[:2]
+        proc = subprocess.Popen(['ffmpeg', '-loglevel', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+            '-s', f'{w}x{h}', '-r', str(cfg.fps/3), '-i', '-', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+            str(out/f'{name}.mp4')], stdin=subprocess.PIPE)
+        for img in frames:
+            proc.stdin.write(img.tobytes())
+        proc.stdin.close()
+        if proc.wait() != 0:
+            raise RuntimeError('ffmpeg encoding failed')
+
+    def collect():
+        manifest = []
+        # Same held-out structure for recovery sources and nominal trajectories.
+        for split, seeds in [('train', c['train_seeds']), ('validation', c['validation_seeds'])]:
+            for seed in seeds:
+                env = env_new()
+                obs, info = env.reset(seed=seed)
+                env.begin_measurement()
+                expert = ScriptedExpert(env, ExpertConfig())
+                anchors = []
+                prefix = []
+                for t in range(cfg.max_episode_steps):
+                    a = expert.act(info)
+                    if info['grasped'] and t % 5 == 0:
+                        anchors.append((env.snapshot(), list(prefix), copy.deepcopy({k: v for k, v in expert.__dict__.items() if k != 'env'}), env.measure()))
+                    prefix.append(frame(obs, a, info))
+                    obs, _, done, timeout, info = env.step(a)
+                    if done or timeout:
+                        break
+                s = env.summary()
+                write(out/f'{split}_{seed}_nominal_safety_trace.json', env.samples)
+                accepted = bool(info['stats']['success'] and not info['stats']['fly_over'] and not s['collision'] and not s['height'])
+                manifest.append(save_trajectory(out/'data', f'{split}_{seed}_nominal', prefix,
+                    dict(kind='nominal', split=split, seed=seed, accepted=accepted, stats=info['stats'], safety=s,
+                         source='scripted_expert', supervised_start=0)))
+                # Controlled perturbations are EXECUTED joint commands, never
+                # teleported qpos. Expert FSM is inherited from the anchor.
+                if anchors:
+                    rng = np.random.default_rng(seed)
+                    eligible = [a for a in anchors if len(a[1]) <= len(prefix)-c.get('minimum_recovery_steps', 56)-25]
+                    anchor = min(eligible or anchors, key=lambda x: abs((x[3]['height_margin'] or 1)-c['near_height_margin']))
+                    snap, history, expert_state, before = anchor
+                    env.monitoring = False
+                    obs, info = env.restore(snap)
+                    env.begin_measurement()
+                    perturb_actions = []
+                    target = env.grasp_position().copy()
+                    target[2] += c['ceiling'] - env.blue_cube_position()[2] - c.get('perturb_height_margin', 0.003)
+                    for _ in range(c['perturb_steps']):
+                        a = np.concatenate([env.ik_solve(target, damping=0.05, pos_tol=0.0005, target_grasp_site=True), [env.gripper_qpos()]])
+                        a[:5] += rng.normal(0, c['perturb_joint_std'], 5)
+                        history.append(frame(obs, a, info))
+                        perturb_actions.append(a.tolist())
+                        obs, _, done, timeout, info = env.step(a)
+                        if done or timeout:
+                            break
+                    start = env.measure()
+                    perturb_safe = not env.summary()['collision'] and not env.summary()['height']
+                    near = ((start['height_margin'] is not None and start['height_margin'] <= c['near_height_margin'])
+                            or start['ee_clearance_proxy'] <= c['near_clearance_proxy'])
+                    env.begin_measurement()
+                    expert = ScriptedExpert(env, ExpertConfig())
+                    # Copy phase, counters and grip but keep the live environment.
+                    for k, v in expert_state.items():
+                        if k != 'env':
+                            setattr(expert, k, v)
+                    expert.replan_carry_from_current(info['cube_positions'])
+                    supervised_start = len(history)
+                    frames, stats, video = rollout(env, lambda o, i: expert.act(i), obs, info, history)
+                    safety = env.summary()
+                    write(out/f'{split}_{seed}_recovery_safety_trace.json', env.samples)
+                    np.savez_compressed(out/f'{split}_{seed}_anchor.npz', **snap)
+                    # Margin improvement must be observed during the validated suffix.
+                    improved = any((x['height_margin'] is not None and start['height_margin'] is not None
+                                    and x['height_margin'] > start['height_margin'] + 0.001)
+                                   or x['ee_clearance_proxy'] > start['ee_clearance_proxy'] + 0.001 for x in env.samples)
+                    valid = bool(perturb_safe and near and improved and stats['success'] and not stats['fly_over'] and not safety['collision'] and not safety['height'])
+                    manifest.append(save_trajectory(out/'data', f'{split}_{seed}_recovery', frames,
+                        dict(kind='recovery', split=split, seed=seed, accepted=valid, source='expert_rollout_executed_perturbation',
+                             anchor=before, start=start, near_boundary=near, margin_improved=improved,
+                             perturbation_safe=perturb_safe, perturb_actions=perturb_actions,
+                             supervised_start=supervised_start, stats=stats, safety=safety)))
+                    if valid:
+                        video_save(f'recovery_{seed}', video)
+                env.close()
+                print('collected', seed, [(m['kind'], m['accepted']) for m in manifest if m['seed']==seed], flush=True)
+        write(out/'manifest.json', manifest)
+        print('collection:', [(m['seed'], m['kind'], m['accepted']) for m in manifest], flush=True)
+
+    def collect_policy():
+        policy = Policy(checkpoint, c['device'])
+        records = []
+        for split, seeds in [('train', c['train_seeds']), ('validation', c['validation_seeds'])]:
+            for seed in seeds:
+                env = env_new()
+                obs, info = env.reset(seed=seed)
+                env.begin_measurement()
+                torch.manual_seed(seed)
+                policy.reset()
+                history, anchor, boundary = [], None, None
+                trigger = None
+                for t in range(cfg.max_episode_steps):
+                    start = env.measure()
+                    near = ((start['height_margin'] is not None and start['height_margin'] <= c['near_height_margin'])
+                            or start['ee_clearance_proxy'] <= c['near_clearance_proxy'])
+                    # A chunk can only change at planning time. Keep the last
+                    # safe, grasped weave planning state; danger later in that
+                    # chunk triggers a branch BACK at its planning boundary.
+                    far_from_goal = np.linalg.norm(info['blue_cube_pos'][:2]-info['goal_pos'][:2]) > c.get('dropoff_radius', .05)
+                    if policy.planning_boundary() and info['grasped'] and far_from_goal and not start['collision'] and not start['height']:
+                        boundary = (env.snapshot(), list(history), start, t)
+                    if info['grasped'] and near and far_from_goal and boundary is not None:
+                        anchor = boundary
+                        trigger = dict(step=t, safety=start)
+                        break
+                    a = policy.act(obs)
+                    history.append(frame(obs, a, info))
+                    obs, _, done, timeout, info = env.step(a)
+                    if done or timeout:
+                        break
+                if anchor is None:
+                    records.append(dict(seed=seed, split=split, source='baseline', accepted=False, reason='no_safe_near_boundary_carry_anchor'))
+                else:
+                    snap, history, start, planning_step = anchor
+                    env.monitoring = False
+                    obs, info = env.restore(snap)
+                    env.begin_measurement()
+                    expert = ScriptedExpert(env, ExpertConfig())
+                    expert.replan_carry_from_current(info['cube_positions'])
+                    frames, stats, video = rollout(env, lambda o, i: expert.act(i), obs, info, history)
+                    safety = env.summary()
+                    improved = any((x['height_margin'] is not None and start['height_margin'] is not None
+                                    and x['height_margin'] > start['height_margin'] + .001)
+                                   or x['ee_clearance_proxy'] > start['ee_clearance_proxy'] + .001 for x in env.samples)
+                    valid = bool(stats['success'] and not stats['fly_over'] and improved and not safety['collision'] and not safety['height'])
+                    m = save_trajectory(out/'data', f'{split}_{seed}_policy_recovery', frames,
+                        dict(kind='recovery', split=split, seed=seed, accepted=valid, source='baseline', start=start,
+                             planning_step=planning_step, trigger=trigger, anchor_mode='chunk_planning_boundary',
+                             supervised_start=len(history), margin_improved=improved, stats=stats, safety=safety))
+                    records.append(m)
+                    if valid:
+                        video_save(f'policy_recovery_{seed}', video)
+                env.close()
+                print('policy recovery', records[-1], flush=True)
+        write(out/'policy_manifest.json', records)
+
+    def train():
+        for seed in c['training_seeds']:
+            for arm, ratio in [('B', 0.), ('C', c['recovery_ratio'])]:
+                torch.manual_seed(seed)
+                rng = np.random.default_rng(seed)
+                policy = Policy(checkpoint, c['device'])
+                ds = Trajectories(out/'data', 'train', policy.cfg)
+                print('training trajectory pools', {k: len(v) for k,v in ds.groups.items()}, 'excluded', ds.excluded, flush=True)
+                for name, p in policy.model.named_parameters():
+                    p.requires_grad_(any(name.startswith(module) for module in c['trainable_modules']))
+                params = [p for p in policy.model.parameters() if p.requires_grad]
+                if not params:
+                    raise ValueError('trainable_modules selected no parameters')
+                optim = torch.optim.AdamW(params, lr=c['lr'])
+                # Keep frozen BatchNorm running statistics fixed in both arms.
+                policy.model.eval()
+                target = out/f'{arm}_seed{seed}'
+                target.mkdir(parents=True, exist_ok=True)
+                progress = target/'training_progress.pt'
+                log = []
+                start_update = 0
+                signature = hashlib.sha256(json.dumps(dict(config=c, arm=arm, seed=seed), sort_keys=True).encode()).hexdigest()
+                if progress.exists():
+                    # Only load our own local resume artifact. It contains RNG
+                    # and optimizer state, not policy inputs or demonstrations.
+                    saved = torch.load(progress, map_location=c['device'], weights_only=False)
+                    if saved['signature'] != signature:
+                        raise ValueError('Resume configuration mismatch; use a new output directory')
+                    own = dict(policy.model.named_parameters())
+                    with torch.no_grad():
+                        for key, value in saved['trainable'].items():
+                            own[key].copy_(value)
+                    optim.load_state_dict(saved['optimizer'])
+                    torch.set_rng_state(saved['torch_rng'].cpu())
+                    if torch.cuda.is_available() and saved['cuda_rng'] is not None:
+                        torch.cuda.set_rng_state_all(saved['cuda_rng'])
+                    rng.bit_generator.state = saved['numpy_rng']
+                    log = saved['log']
+                    start_update = saved['completed_updates']
+                for update in range(start_update, c['updates']):
+                    optim.zero_grad()
+                    losses, kinds = [], []
+                    for sample_idx in range(c['batch_size']):
+                        # Stratify each update so the tiny smoke actually uses recovery data.
+                        use_recovery = sample_idx < round(ratio*c['batch_size'])
+                        batch, kind = ds.sample(rng, float(use_recovery))
+                        loss = policy.imitation_loss(batch)
+                        (loss/c['batch_size']).backward()
+                        losses.append(float(loss.detach()))
+                        kinds.append(kind)
+                    norm = torch.nn.utils.clip_grad_norm_(params, 1.)
+                    if not torch.isfinite(norm):
+                        raise ValueError('Nonfinite gradient')
+                    optim.step()
+                    log.append(dict(update=update+1, loss=float(np.mean(losses)), grad_norm=float(norm), sources=kinds))
+                    if (update+1) % c.get('save_freq', 50) == 0 or update+1 == c['updates']:
+                        state = dict(signature=signature, completed_updates=update+1, log=log,
+                            trainable={n: p.detach().cpu() for n,p in policy.model.named_parameters() if p.requires_grad},
+                            optimizer=optim.state_dict(), torch_rng=torch.get_rng_state(),
+                            cuda_rng=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                            numpy_rng=rng.bit_generator.state)
+                        tmp = progress.with_suffix('.tmp')
+                        torch.save(state, tmp)
+                        tmp.replace(progress)
+                        write(target/'progress.json', dict(completed_updates=update+1, latest=log[-1]))
+                        print('training progress', arm, seed, log[-1], flush=True)
+                target = out/f'{arm}_seed{seed}'
+                policy.model.save_pretrained(target)
+                policy.pre.save_pretrained(target)
+                policy.post.save_pretrained(target)
+                write(target/'training_log.json', dict(initial_checkpoint=str(checkpoint), seed=seed, arm=arm,
+                    trainable_parameters=sum(p.numel() for p in params), updates=log))
+                print('trained', arm, log, flush=True)
+                del policy, optim, params
+
+    def evaluate():
+        partial = out/'results.partial.json'
+        results = json.loads(partial.read_text()) if partial.exists() else []
+        completed = {(r['arm'], r['suite'], r['seed']) for r in results}
+        for name, path in [('A', checkpoint)] + [(f'{a}_seed{s}', out/f'{a}_seed{s}') for s in c['training_seeds'] for a in ['B','C']]:
+            if not path.exists():
+                continue
+            policy = Policy(path, c['device'])
+            cases = [('nominal', seed) for seed in c['train_seeds'][:1]]
+            cases += [(suite, seed) for suite in ['held_out', 'near_boundary'] for seed in c['eval_seeds']]
+            for suite, seed in cases:
+                if (name, suite, seed) in completed:
+                    continue
+                print('starting evaluation', name, suite, seed, flush=True)
+                env = env_new()
+                obs, info = env.reset(seed=seed)
+                if suite == 'near_boundary':
+                    expert = ScriptedExpert(env, ExpertConfig())
+                    for _ in range(cfg.max_episode_steps):
+                        obs, _, done, timeout, info = env.step(expert.act(info))
+                        if info['grasped'] and env.blue_cube_position()[2] > .023:
+                            break
+                        if done or timeout:
+                            break
+                    target = env.grasp_position().copy()
+                    target[2] += c['ceiling'] - env.blue_cube_position()[2] - c.get('perturb_height_margin', .003)
+                    for _ in range(c['perturb_steps']):
+                        a = np.concatenate([env.ik_solve(target, damping=.05, pos_tol=.0005, target_grasp_site=True), [env.gripper_qpos()]])
+                        obs, _, done, timeout, info = env.step(a)
+                        if done or timeout:
+                            break
+                    # Preserve the exact physical state, give every policy the
+                    # same full continuation budget and fresh task counters.
+                    snap = env.snapshot()
+                    obs, info = env.restore(snap)
+                env.begin_measurement()
+                initial = env.measure()
+                if suite == 'near_boundary' and (not env._blue_grasped() or initial['collision'] or initial['height'] or initial['height_margin'] > c['near_height_margin']):
+                    results.append(dict(arm=name, seed=seed, suite=suite, excluded=True, initial=initial,
+                                        reason='boundary_setup_failed'))
+                    env.close()
+                    write(out/'results.partial.json', results)
+                    continue
+                # Paired diffusion noise as well as paired environment reset.
+                torch.manual_seed(seed)
+                policy.reset()
+                _, stats, video = rollout(env, lambda o, i: policy.act(o), obs, info)
+                safety = env.summary()
+                safe = not any(safety[k] for k in ['reset_collision','reset_height','collision','height'])
+                results.append(dict(arm=name, seed=seed, suite=suite, success=stats['success'],
+                                    safe_success=bool(stats['success'] and safe), safety=safety, stats=stats,
+                                    initial=initial, recovery_success=bool(stats['success'] and safe) if suite=='near_boundary' else None,
+                                    interventions=0, runtime_filter=False, filter_latency_ms=0.,
+                                    action_latency_median_ms=float(np.median(policy.latencies)*1000),
+                                    action_latency_p95_ms=float(np.percentile(policy.latencies,95)*1000)))
+                write(out/'results.partial.json', results)
+                write(out/f'{name}_{suite}_{seed}_safety_trace.json', env.samples)
+                video_save(f'{name}_{suite}_{seed}', video)
+                env.close()
+                print('evaluated', name, suite, seed, stats['success'], safety, flush=True)
+            del policy
+        write(out/'results.json', results)
+        lines = ['| Arm | N | Success | Safe success | Collision | Ceiling |', '|---|---:|---:|---:|---:|---:|']
+        for arm, suite in dict.fromkeys((r['arm'],r['suite']) for r in results):
+            rows = [r for r in results if r['arm']==arm and r['suite']==suite and not r.get('excluded')]
+            n = len(rows)
+            if not n:
+                continue
+            vals = [sum(r[k] for r in rows)/n for k in ['success','safe_success']]
+            vals += [sum(r['safety'][k] for r in rows)/n for k in ['introduced_collision','introduced_height']]
+            lines.append(f'| {arm} ({suite}) | {n} | ' + ' | '.join(f'{v:.1%}' for v in vals) + ' |')
+        (out/'results.md').write_text('\n'.join(lines)+'\n')
+
+    if args.command == 'collect-policy':
+        collect_policy()
+    if args.command in ['collect', 'smoke']:
+        collect()
+    if args.command in ['train', 'smoke']:
+        train()
+    if args.command in ['evaluate', 'smoke']:
+        evaluate()
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,11 @@
+# Pin the exact source of the installed development framework, not an unpublished PyPI version.
+# Simulation, expert and assets are local; this installs only the LeRobot package.
+lerobot[diffusion,training] @ git+https://github.com/jpothen8/LeRobot-SafetyCubes.git@c81ebec7f8113cbf4616ef7c055b22b148ec3135
+mujoco==3.9.0
+diffusers==0.35.2
+numpy==2.2.6
+scipy==1.17.1
+wandb==0.24.2
+safetensors==0.7.0
+torch==2.11.0
+torchvision==0.26.0

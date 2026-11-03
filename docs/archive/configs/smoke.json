@@ -1,0 +1,34 @@
+{
+  "reference": "~/Documents/LeRobot-SafetyCubes",
+  "checkpoint": "checkpoints/base",
+  "device": "cpu",
+  "threads": 4,
+  "max_episode_steps": 400,
+  "ceiling": 0.035,
+  "contact_tolerance": 0.0,
+  "near_height_margin": 0.008,
+  "near_clearance_proxy": 0.025,
+  "perturb_joint_std": 0.003,
+  "perturb_steps": 15,
+  "train_seeds": [
+    8100,
+    8101
+  ],
+  "validation_seeds": [
+    8200
+  ],
+  "eval_seeds": [
+    8300
+  ],
+  "training_seeds": [
+    17
+  ],
+  "recovery_ratio": 0.5,
+  "trainable_modules": [
+    "diffusion.unet.final_conv"
+  ],
+  "lr": 1e-05,
+  "updates": 1,
+  "batch_size": 2,
+  "perturb_height_margin": 0.003
+}

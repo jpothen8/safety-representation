@@ -1,0 +1,58 @@
+{
+  "source": "outputs/safe_diffusion_lam0/checkpoints/100000/pretrained_model",
+  "reference_commit": "c81ebec7f8113cbf4616ef7c055b22b148ec3135",
+  "source_safety_weight": 0.0,
+  "previous_training_updates": 100000,
+  "description": "Task-pretrained nominal diffusion checkpoint; not a generic untrained policy. Weights unchanged; config converted to stock DiffusionPolicy.",
+  "removed_fields": [
+    "arm_joint_names",
+    "ceiling_alpha",
+    "ceiling_buffer",
+    "ceiling_grasped_only",
+    "ceiling_weight",
+    "clamp_endpoint",
+    "collision_links",
+    "collision_offsets",
+    "collision_radii",
+    "ee_height_ceiling",
+    "ee_link_name",
+    "ee_radius",
+    "ee_to_cube_z_offset",
+    "held_cube_offset",
+    "held_cube_radius",
+    "hinge_margin",
+    "lateral_clearance",
+    "obstacle_weight",
+    "safety_form",
+    "safety_max_noise_frac",
+    "safety_time_weighting",
+    "safety_weight",
+    "sdf_alpha",
+    "sdf_margin",
+    "urdf_path"
+  ],
+  "files": {
+    "env.py": "971dd66d01393aab19b6fd256d65d9c01269246aaebb3ff1f7370b536ee97a87",
+    "configs.py": "48a1a900aea3bcfdb706d15ab504d1f6491921fe88c4d74c17066861aacdf3f4",
+    "expert.py": "5f7f1a140bc75db359303ef7d25df83e788d7920af79cf48e771971feee509f2",
+    "scene.py": "d03371df737763d4cf518d36a604ba396f2b7a64bf2d21d96b3dfc46bd8974db",
+    "randomize.py": "ebe0a8310180c9e052f7d50e23b0cdee2328dea2a7c7ce9a3ab493c6a4ec8294"
+  },
+  "source_repository": "https://github.com/jpothen8/LeRobot-SafetyCubes",
+  "local_changes": [
+    "configs.py: resolve asset paths relative to this module",
+    "__init__.py: local API documentation",
+    "SO-101 URDF: remove trailing XML whitespace only"
+  ],
+  "local_files": {
+    "env.py": "971dd66d01393aab19b6fd256d65d9c01269246aaebb3ff1f7370b536ee97a87",
+    "configs.py": "3f2eb1d98c0c9ae3d49f16947530f4b5df9054c96d798ad31cd50b0c3c7bc3f5",
+    "expert.py": "5f7f1a140bc75db359303ef7d25df83e788d7920af79cf48e771971feee509f2",
+    "scene.py": "d03371df737763d4cf518d36a604ba396f2b7a64bf2d21d96b3dfc46bd8974db",
+    "randomize.py": "ebe0a8310180c9e052f7d50e23b0cdee2328dea2a7c7ce9a3ab493c6a4ec8294"
+  },
+  "urdf_hashes": {
+    "source": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c",
+    "local": "11444c3ac7a174f7efd3560c03d2de8aa01a48f28df8b1506eb096c0a81b7f4e"
+  }
+}

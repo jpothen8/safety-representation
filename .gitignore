@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+artifacts/
+checkpoints/
+wandb/
+.publication/
+.env
+.env.*
+*.safetensors
+*.pt
+*.npz
+*.mp4
+*.log

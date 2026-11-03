@@ -1,0 +1,57 @@
+"""Checks the completed local smoke without replaying expensive rollouts."""
+import argparse
+import json
+from pathlib import Path
+import numpy as np
+from safetensors import safe_open
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--output', default='artifacts/smoke')
+    args = ap.parse_args()
+    out = Path(args.output).resolve()
+    c = json.loads((out/'train_config.json' if (out/'train_config.json').exists() else out/'config.json').read_text())
+    baseline = Path(c['reference']).expanduser()/c['checkpoint']/'model.safetensors'
+    counts = {}
+    usable = {}
+    short = []
+    horizon = json.loads((baseline.parent/'config.json').read_text())['horizon']
+    for p in sorted((out/'data').glob('*.json')):
+        m = json.loads(p.read_text())
+        if not m['accepted']:
+            continue
+        key = (m['split'],m['kind'])
+        counts[key] = counts.get(key,0)+1
+        if m['frames']-m.get('supervised_start',0) >= horizon:
+            usable[key] = usable.get(key,0)+1
+        else:
+            short.append(m['file'])
+        with np.load(p.parent/m['file'], allow_pickle=False) as d:
+            assert len(d['action']) == len(d['state']) == m['frames']
+            assert np.isfinite(d['action']).all() and np.isfinite(d['state']).all()
+            assert (d['image'].std(axis=(1,2,3))>1).all(), f'Black/constant camera: {p}'
+            assert (d['wrist_image'].std(axis=(1,2,3))>1).all(), f'Black/constant wrist: {p}'
+        assert m['stats']['success'] and not m['safety']['collision'] and not m['safety']['height']
+        if m['kind']=='recovery':
+            assert m['margin_improved'] and m['supervised_start']>0
+    checks = []
+    with safe_open(str(baseline),framework='pt',device='cpu') as initial:
+        frozen_key = next(k for k in initial.keys() if k.startswith('diffusion.unet') and not any(k.startswith(x) for x in c['trainable_modules']))
+        trained_keys = [k for k in initial.keys() if any(k.startswith(x) for x in c['trainable_modules'])]
+        for seed in c['training_seeds']:
+            for arm in ['B','C']:
+                with safe_open(str(out/f'{arm}_seed{seed}'/'model.safetensors'),framework='pt',device='cpu') as trained:
+                    assert np.array_equal(initial.get_tensor(frozen_key),trained.get_tensor(frozen_key))
+                    change = max(float((initial.get_tensor(k)-trained.get_tensor(k)).abs().max()) for k in trained_keys)
+                    assert change>0
+                    checks.append(dict(arm=arm,seed=seed,max_parameter_change=change,frozen_tensor_checked=frozen_key))
+    result = dict(accepted_trajectories={f'{k[0]}/{k[1]}':v for k,v in counts.items()},
+                  usable_trajectories={f'{k[0]}/{k[1]}':v for k,v in usable.items()},
+                  excluded_short_suffixes=short, checkpoint_checks=checks)
+    (out/'verification.json').write_text(json.dumps(result,indent=2)+'\n')
+    print(json.dumps(result,indent=2))
+
+
+if __name__=='__main__':
+    main()

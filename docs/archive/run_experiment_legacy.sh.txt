@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Invoke this from the server's tmux terminal. Each stage is restartable.
+set -euo pipefail
+if [[ -z "${TMUX:-}" ]]; then
+    echo 'Run this script inside tmux so SSH disconnects do not own the job.' >&2
+    exit 2
+fi
+cd /home/john/Documents/Safety-Representation
+reference_root=${SAFETYCUBES_REFERENCE:-/home/john/Documents/LeRobot-SafetyCubes}
+export MUJOCO_GL=egl
+unset DISPLAY
+export PYTHONUNBUFFERED=1
+stage=${1:-evaluate}
+config=${2:-configs/smoke.json}
+output=${3:-artifacts/smoke}
+mkdir -p "$output/logs"
+exec 9> "$output/.${stage}.lock"
+flock -n 9 || { echo "Stage already running for this output: $stage" >&2; exit 3; }
+log="$output/logs/${stage}_$(date -u +%Y%m%dT%H%M%SZ).log"
+"$reference_root/.venv/bin/python" -m recovery_experiment.run "$stage" --config "$config" --output "$output" 2>&1 | tee "$log"

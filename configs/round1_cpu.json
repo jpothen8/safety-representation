@@ -1,0 +1,49 @@
+{
+  "experiment_name": "collision-recovery-only-pilot",
+  "checkpoint": "checkpoints/base",
+  "device": "cpu",
+  "threads": 4,
+  "max_episode_steps": 400,
+  "ceiling": 0.035,
+  "contact_tolerance": 0.0,
+  "base_expert_seeds": [
+    9400,
+    9401
+  ],
+  "more_expert_seeds": [
+    9402,
+    9403
+  ],
+  "validation_seeds": [
+    9500
+  ],
+  "video_seed": 9500,
+  "eval_seeds": [
+    9600
+  ],
+  "training_seed": 17,
+  "base_updates": 20,
+  "continuation_updates": 20,
+  "save_freq": 20,
+  "batch_size": 2,
+  "lr": 1e-05,
+  "trainable_modules": [
+    "diffusion"
+  ],
+  "recovery_ratio": 0.5,
+  "near_collision_margin": 0.015,
+  "minimum_collision_margin": 0.002,
+  "perturb_xy_step": 0.002,
+  "perturb_settle_steps": 5,
+  "max_perturb_steps": 20,
+  "minimum_recovery_steps": 56,
+  "recovery_seeds": [
+    9400,
+    9401
+  ],
+  "wandb": {
+    "mode": "online",
+    "project": "safe-cube",
+    "allow_local_fallback": true
+  }
+}
