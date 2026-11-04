@@ -1,0 +1,21 @@
+{
+  "name": "collision-recovery-full-v1",
+  "training_seeds": [17, 23, 42],
+  "seed_pools": {
+    "base": {"start": 100000, "count": 500},
+    "more": {"start": 101000, "count": 500},
+    "validation": {"start": 102000, "count": 80},
+    "evaluation": {"start": 103000, "count": 100}
+  },
+  "expert_targets": {"base": 150, "more": 150, "validation": 20},
+  "recovery_target": 50,
+  "boundary_cases": 50,
+  "validation_cases_per_checkpoint": 10,
+  "base_updates": 2000,
+  "continuation_updates": 1000,
+  "save_freq": 250,
+  "batch_size": 32,
+  "microbatch_size": 8,
+  "lr": 0.00001,
+  "wandb_entity": null
+}

@@ -10,9 +10,14 @@ def save_trajectory(root, name, frames, meta):
     root.mkdir(parents=True, exist_ok=True)
     arrays = {k: np.stack([f[k] for f in frames]) for k in frames[0]}
     path = root / f'{name}.npz'
-    np.savez_compressed(path, **arrays)
+    temporary=path.with_name('.'+name+'.tmp.npz')
+    np.savez_compressed(temporary, **arrays)
+    temporary.replace(path)
     meta = dict(meta, file=path.name, frames=len(frames))
-    (root / f'{name}.json').write_text(json.dumps(meta, indent=2, allow_nan=False))
+    metadata_path=root/f'{name}.json'
+    metadata_tmp=metadata_path.with_suffix('.json.tmp')
+    metadata_tmp.write_text(json.dumps(meta, indent=2, allow_nan=False))
+    metadata_tmp.replace(metadata_path)
     return meta
 
 
@@ -23,8 +28,10 @@ def frame(obs, action, info):
 
 
 class Trajectories:
-    def __init__(self, root, split, cfg):
+    def __init__(self, root, split, cfg, cache_root=None):
         self.cfg = cfg
+        from .cache import TrajectoryCache
+        self.cache = TrajectoryCache(cache_root) if cache_root else None
         self.groups = {'nominal': [], 'recovery': []}
         self.excluded = []
         for p in sorted(Path(root).glob('*.json')):
@@ -40,7 +47,8 @@ class Trajectories:
         if not self.groups[kind]:
             raise ValueError(f'No validated {kind} trajectories; collect more seeds before training')
         m, path = self.groups[kind][rng.integers(len(self.groups[kind]))]
-        with np.load(path, allow_pickle=False) as d:
+        source = self.cache.trajectory(path) if self.cache else np.load(path, allow_pickle=False)
+        with source as d:
             # Only complete chunks are used: no unlabelled endpoint padding.
             lo = m.get('supervised_start', 0) + self.cfg.n_obs_steps - 1
             hi = len(d['action']) - (self.cfg.horizon - self.cfg.n_obs_steps + 1)

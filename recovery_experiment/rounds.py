@@ -32,6 +32,7 @@ def main():
     parser.add_argument('stage',choices=['collect-expert','train-expert','collect-recovery','compare','run','sync-tracking'])
     parser.add_argument('--config',default='configs/round1_cpu.json')
     parser.add_argument('--output',default='artifacts/round1')
+    parser.add_argument('--max-new-trajectories',type=int,help='Bound a collection shard; a later invocation continues the same cohort')
     args=parser.parse_args()
     c=json.loads(Path(args.config).resolve().read_text())
     out=Path(args.output).resolve();out.mkdir(parents=True,exist_ok=True)
@@ -42,8 +43,9 @@ def main():
     from .policy import Policy
     from .data import frame,save_trajectory,Trajectories
     from .tracking import Tracker
+    from .optimization import imitation_update
     torch.set_num_threads(c['threads'])
-    if c['device'].startswith('cuda') and not torch.cuda.is_available():
+    if args.stage not in ['collect-expert','collect-recovery','sync-tracking'] and c['device'].startswith('cuda') and not torch.cuda.is_available():
         raise RuntimeError('CUDA unavailable; use the explicitly budgeted CPU pilot or run from the native GPU terminal')
     pools=[set(c[k]) for k in ['base_expert_seeds','more_expert_seeds','validation_seeds','eval_seeds']]
     assert all(not pools[i]&pools[j] for i in range(len(pools)) for j in range(i)), 'Initial-condition split leakage'
@@ -55,6 +57,16 @@ def main():
     write(out/'config.json',c)
     write(out/'environment.json',dict(env=asdict(EnvConfig()),expert=asdict(ExpertConfig()),port=json.loads((root/'sim/PORT_PROVENANCE.json').read_text())))
     base=root/c['checkpoint']
+    data_root=Path(c.get('data_root',out/'data'))
+    if not data_root.is_absolute():data_root=root/data_root
+    cache_root=c.get('data_cache_root')
+    setup_root=Path(c.get('evaluation_setup_root',out))
+    if not setup_root.is_absolute():setup_root=root/setup_root
+
+    def accepted_count(group):
+        return sum(bool(m.get('accepted')) and m.get('group')==group for m in
+                   (json.loads(p.read_text()) for p in data_root.glob('*.json')))
+
 
     def new_env():
         cfg=EnvConfig(max_episode_steps=c['max_episode_steps'],terminate_on_red_contact=True)
@@ -76,6 +88,8 @@ def main():
     def execute(env,obs,info,actor,prefix=None):
         frames=list(prefix or []);video=[]
         for t in range(c['max_episode_steps']):
+            if c.get('validate_rgb') and any(float(obs[key].std())<=1 for key in ['image','wrist_image']):
+                raise RuntimeError('Black/constant camera frame; aborting before creating training labels or policy metrics')
             action=actor(obs,info)
             frames.append(frame(obs,action,info))
             if t%3==0:video.append(obs['image'].copy())
@@ -88,26 +102,34 @@ def main():
                     and not safety['reset_collision'] and not safety['reset_height'])
 
     def expert_collect():
+        new_count=0
         for group,seeds,split in [('base',c['base_expert_seeds'],'train'),('more',c['more_expert_seeds'],'train'),
                                  ('validation',c['validation_seeds'],'validation')]:
+            target=c.get('expert_targets',{}).get(group)
             for seed in seeds:
+                if target is not None and accepted_count(group)>=target:break
+                if args.max_new_trajectories is not None and new_count>=args.max_new_trajectories:return
                 name=f'{group}_{seed}'
-                if (out/'data'/f'{name}.json').exists():continue
+                if (data_root/f'{name}.json').exists():continue
                 env=new_env()
                 try:
                     obs,info=env.reset(seed=seed);env.begin_measurement()
                     expert=ScriptedExpert(env,ExpertConfig())
                     frames,video,stats=execute(env,obs,info,lambda o,i:expert.act(i))
                     safety=env.summary()
-                    meta=save_trajectory(out/'data',name,frames,dict(kind='nominal',group=group,split=split,seed=seed,
+                    meta=save_trajectory(data_root,name,frames,dict(kind='nominal',group=group,split=split,seed=seed,
                         source='full_task_expert',supervised_start=0,accepted=valid(stats,safety),stats=stats,safety=safety))
                     write(out/'traces'/f'{name}.json',env.samples)
                     save_video(out/'expert_videos'/f'{name}.mp4',video)
+                    new_count+=1
                     print('expert trajectory',name,meta['accepted'],len(frames),flush=True)
+                    write(out/'collection_progress.json',{g:accepted_count(g) for g in ['base','more','validation','recovery']})
                 finally:env.close()
+            if target is not None and accepted_count(group)<target:
+                raise RuntimeError(f'Insufficient successful {group} demonstrations: {accepted_count(group)}/{target}; reserve more parent seeds')
 
     def dataset(groups):
-        data=Trajectories(out/'data','train',type('Temporal',(),dict(horizon=56,n_obs_steps=1,input_features={}))())
+        data=Trajectories(data_root,'train',type('Temporal',(),dict(horizon=56,n_obs_steps=1,input_features={}))(),cache_root=cache_root)
         # Replaced with the loaded checkpoint config by train(); filter lineage.
         for kind in data.groups:
             data.groups[kind]=[(m,p) for m,p in data.groups[kind] if m.get('group') in groups]
@@ -161,9 +183,29 @@ def main():
             torch.set_rng_state(state['torch_rng'].cpu());rng.bit_generator.state=state['numpy_rng']
             if torch.cuda.is_available() and state.get('cuda_rng') is not None:torch.cuda.set_rng_state_all([value.cpu() for value in state['cuda_rng']])
             start=state['update'];log=state['log']
+        def complete_checkpoint(ckpt,step):
+            devices=[torch.cuda.current_device()] if c['device'].startswith('cuda') else []
+            # All validation inference, model construction and logging are
+            # isolated from the training random stream, including on resume.
+            with torch.random.fork_rng(devices=devices):
+                row=evaluate_checkpoint(ckpt,ckpt/'evaluation',c['video_seed'])
+                tracker.log({'eval/success':int(row['success']),'eval/safe_success':int(row['safe_success']),
+                    'eval/collision':int(row['safety']['introduced_collision']),'eval/ceiling':int(row['safety']['introduced_height'])},step)
+                tracker.video(ckpt/'evaluation/rollout.mp4',step)
+                validation=[]
+                seeds=c.get('checkpoint_eval_seeds',[c['video_seed']])
+                for validation_seed in seeds:
+                    directory=ckpt/'evaluation' if validation_seed==c['video_seed'] else ckpt/'validation'/str(validation_seed)
+                    validation.append(evaluate_checkpoint(ckpt,directory,validation_seed))
+                summary=dict(n=len(validation),seeds=seeds,safe_success=sum(r['safe_success'] for r in validation)/len(validation),
+                    task_success=sum(r['success'] for r in validation)/len(validation))
+                write(ckpt/'validation_summary.json',summary)
+                tracker.log({'validation/safe_success':summary['safe_success'],
+                    'validation/task_success':summary['task_success'],'validation/n':len(validation)},step)
+
         try:
             for update in range(start,budget):
-                optimizer.zero_grad(set_to_none=True);losses=[];sources=[];samples=[]
+                batches=[];sources=[];samples=[]
                 for sample in range(c['batch_size']):
                     fraction=float(sample<round(ratio*c['batch_size']))
                     selected=ds
@@ -176,12 +218,10 @@ def main():
                         sample_rng=np.random.default_rng(c['training_seed']*100000+update*c['batch_size']+sample)
                     batch,kind=selected.sample(sample_rng,fraction)
                     samples.append(selected.last_sample)
-                    loss=policy.imitation_loss(batch)
-                    (loss/c['batch_size']).backward();losses.append(float(loss.detach()));sources.append(kind)
-                grad=torch.nn.utils.clip_grad_norm_(parameters,1.)
-                if not torch.isfinite(grad):raise RuntimeError('Nonfinite gradients')
-                optimizer.step();step=update+1
-                entry=dict(step=step,loss=float(np.mean(losses)),grad_norm=float(grad),sources=sources,samples=samples)
+                    batches.append(batch);sources.append(kind)
+                mean_loss,grad=imitation_update(policy,optimizer,batches,c.get('microbatch_size',1))
+                step=update+1
+                entry=dict(step=step,loss=mean_loss,grad_norm=grad,sources=sources,samples=samples)
                 log.append(entry);tracker.log({'train/loss':entry['loss'],'train/grad_norm':entry['grad_norm'],
                     'train/recovery_samples':sources.count('recovery'),'train/nominal_samples':sources.count('nominal'),
                     'train/additional_samples':sum(s['group'] in ['more','recovery'] for s in samples)},step)
@@ -196,21 +236,11 @@ def main():
                     tmp.replace(resume)
                     write(stage/'training.json',dict(initial=str(initial),loss='standard_diffusion_MSE',trainable_modules=c['trainable_modules'],
                         trainable_parameters=sum(p.numel() for p in parameters),updates=log,groups=groups,recovery_ratio=ratio))
-                    # Evaluate the SAVED checkpoint, not the live optimizer model.
-                    # Isolate video inference RNG so it cannot perturb training.
-                    rng_state=torch.get_rng_state();cuda_state=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
-                    row=evaluate_checkpoint(ckpt,ckpt/'evaluation',c['video_seed'])
-                    torch.set_rng_state(rng_state)
-                    if cuda_state is not None:torch.cuda.set_rng_state_all(cuda_state)
-                    tracker.log({'eval/success':int(row['success']),'eval/safe_success':int(row['safe_success']),
-                        'eval/collision':int(row['safety']['introduced_collision']),'eval/ceiling':int(row['safety']['introduced_height'])},step)
-                    tracker.video(ckpt/'evaluation/rollout.mp4',step)
-            # A restart after weights were saved but before video export must
-            # regenerate the missing checkpoint video, even with no updates left.
+                    complete_checkpoint(ckpt,step)
+            # Repair any interrupted validation/video export without new updates.
             for ckpt in sorted((stage/'checkpoints').glob('*')):
-                if not (ckpt/'evaluation/rollout.mp4').exists():
-                    evaluate_checkpoint(ckpt,ckpt/'evaluation',c['video_seed'])
-                    tracker.video(ckpt/'evaluation/rollout.mp4',int(ckpt.name))
+                if not (ckpt/'evaluation/rollout.mp4').exists() or not (ckpt/'validation_summary.json').exists():
+                    complete_checkpoint(ckpt,int(ckpt.name))
         finally:tracker.finish()
         return stage/'checkpoints'/f'{budget:06d}'
 
@@ -220,8 +250,13 @@ def main():
         No height perturbation or height-only candidate gate. The ported expert
         supplies a coherent completion; all perturbation actions are excluded.
         """
+        new_count=0
+        recovery_goal=c.get('recovery_target')
         for seed in c['recovery_seeds']:
-            if (out/'data'/f'recovery_{seed}.json').exists():continue
+            if recovery_goal is not None and accepted_count('recovery')>=recovery_goal:break
+            if args.max_new_trajectories is not None and new_count>=args.max_new_trajectories:return
+            if (data_root/f'recovery_{seed}.json').exists():continue
+            if c.get('cache_failed_recovery_attempts') and (out/'recovery_attempts'/f'{seed}.json').exists():continue
             env=new_env()
             try:
                 obs,info=env.reset(seed=seed);env.begin_measurement()
@@ -237,16 +272,26 @@ def main():
                 for attempt,(snap,history,expert_state) in enumerate(anchors[:5]):
                     env.monitoring=False;obs,info=env.restore(snap);env.begin_measurement()
                     history=list(history);perturb=[];collision=False;near=False
+                    initial_clearance,_=env.collision_clearance()
+                    require_perturbation=c.get('require_executed_recovery_perturbation',False)
                     for k in range(c['max_perturb_steps']):
                         clearance,pair=env.collision_clearance()
-                        if c['minimum_collision_margin']<=clearance<=c['near_collision_margin']:
+                        band=c['minimum_collision_margin']<=clearance<=c['near_collision_margin']
+                        reduced=bool(perturb) and initial_clearance-clearance>=c.get('minimum_perturbation_margin_drop',.002)
+                        if band and (not require_perturbation or reduced):
                             near=True;break
                         if clearance<c['minimum_collision_margin']:break
                         red_id=env._red_body_ids[int(np.argmin(np.linalg.norm(info['cube_positions'][:,:2]-info['blue_cube_pos'][:2],axis=1)))]
                         direction=env.data.xpos[red_id,:2]-env.blue_cube_position()[:2]
+                        if require_perturbation and pair is not None:
+                            import mujoco
+                            segment=np.zeros(6)
+                            mujoco.mj_geomDistance(env.model,env.data,pair[0],pair[1],.1,segment)
+                            direction=(segment[:3]-segment[3:])[:2]
+                            if np.linalg.norm(direction)<1e-8:break
                         direction/=max(float(np.linalg.norm(direction)),1e-8)
-                        target=env.grasp_position().copy();target[:2]+=direction*c['perturb_xy_step']
-                        action=np.r_[env.ik_solve(target,damping=.05,pos_tol=.0005,target_grasp_site=True),env.gripper_qpos()]
+                        cartesian_target=env.grasp_position().copy();cartesian_target[:2]+=direction*c['perturb_xy_step']
+                        action=np.r_[env.ik_solve(cartesian_target,damping=.05,pos_tol=.0005,target_grasp_site=True),env.gripper_qpos()]
                         for _ in range(c['perturb_settle_steps']):
                             history.append(frame(obs,action,info));perturb.append(action.tolist())
                             obs,_,done,timeout,info=env.step(action)
@@ -271,8 +316,10 @@ def main():
                     attempts.append(dict(attempt=attempt,accepted=good,initial_clearance=clearance,final_clearance=finish_margin,
                                          suffix_steps=len(frames)-suffix_start,safety=safety,stats=stats))
                     if not good:continue
-                    meta=save_trajectory(out/'data',f'recovery_{seed}',frames,dict(kind='recovery',group='recovery',split='train',seed=seed,
-                        source='expert_carry_executed_xy_perturbation',accepted=True,supervised_start=suffix_start,stats=stats,safety=safety,
+                    meta=save_trajectory(data_root,f'recovery_{seed}',frames,dict(kind='recovery',group='recovery',split='train',seed=seed,
+                        source='expert_carry_executed_xy_perturbation' if perturb else 'natural_near_boundary_expert',
+                        perturbation_executed=bool(perturb),pre_perturbation_clearance=initial_clearance,
+                        perturbation_margin_drop=initial_clearance-clearance,accepted=True,supervised_start=suffix_start,stats=stats,safety=safety,
                         near_boundary=True,collision_margin=clearance,closest_geom_pair=pair,margin_improved=True,
                         perturb_actions=perturb,start=start,anchor_attempt=attempt))
                     np.savez_compressed(out/'snapshots'/f'recovery_{seed}.npz',**recovery_snap)
@@ -280,11 +327,26 @@ def main():
                     save_video(out/'recovery_videos'/f'{seed}.mp4',video)
                     saved=True;print('near-collision recovery',seed,clearance,meta['frames']-suffix_start,flush=True);break
                 write(out/'recovery_attempts'/f'{seed}.json',dict(accepted=saved,attempts=attempts))
+                new_count+=1
+                write(out/'collection_progress.json',{g:accepted_count(g) for g in ['base','more','validation','recovery']})
                 if not saved:print('no validated collision recovery for seed',seed,flush=True)
             finally:env.close()
+        if recovery_goal is not None and accepted_count('recovery')<recovery_goal and c.get('require_recovery_target',True):
+            raise RuntimeError(f'Insufficient recoveries: {accepted_count("recovery")}/{recovery_goal}')
 
     def compare():
         expert_ckpt=out/'expert_round/checkpoints'/f"{c['base_updates']:06d}"
+        if c.get('expert_checkpoint_selection')=='validation_safe_success':
+            candidates=[]
+            for checkpoint in sorted((out/'expert_round/checkpoints').glob('*')):
+                summary=checkpoint/'validation_summary.json'
+                if summary.exists():
+                    score=json.loads(summary.read_text())
+                    candidates.append((score['safe_success'],score['task_success'],-int(checkpoint.name),checkpoint))
+            if not candidates:raise RuntimeError('Expert checkpoint has no completed validation')
+            expert_ckpt=max(candidates,key=lambda item:item[:3])[3]
+            write(out/'expert_checkpoint_selection.json',dict(checkpoint=str(expert_ckpt),criterion='validation_safe_success',
+                note='B/C use this identical validation-selected parent. Their primary comparisons use matched final budgets.'))
         if not expert_ckpt.exists():raise FileNotFoundError('Run train-expert before the comparison')
         nominal=train('more_expert',expert_ckpt,c['continuation_updates'],['base','more'],0.)
         recovery=train('recovery_round',expert_ckpt,c['continuation_updates'],['base','recovery'],c['recovery_ratio'])
@@ -339,22 +401,24 @@ def main():
         finally:tracker.finish()
 
     def make_evaluation_boundary(seed):
-        path=out/'evaluation_initials'/f'{seed}.npz'
+        path=setup_root/'evaluation_initials'/f'{seed}.npz'
         if path.exists():
             with np.load(path,allow_pickle=False) as d:return {k:d[k] for k in d.files}
-        if (out/'evaluation_initials'/f'{seed}_excluded.json').exists():return None
+        if (setup_root/'evaluation_initials'/f'{seed}_excluded.json').exists():return None
         # Use the same collision-boundary generator on a held-out parent,
         # never import a training anchor into the evaluation split.
-        eval_out=out/'boundary_generation'
+        eval_out=setup_root/'boundary_generation'/str(seed)
         # recoveries closes over out. A separate invocation provides isolation
         # and writes its own provenance; its data is never used by training.
-        config=dict(c,recovery_seeds=[seed],base_expert_seeds=[seed],more_expert_seeds=[],validation_seeds=[],eval_seeds=[])
-        config_path=out/'boundary_config.json';write(config_path,config)
+        config=dict(c,recovery_seeds=[seed],base_expert_seeds=[seed],more_expert_seeds=[],validation_seeds=[],eval_seeds=[],
+                    boundary_eval_seeds=[],checkpoint_eval_seeds=[],data_root=str(eval_out/'data'),data_cache_root=str(eval_out/'cache'),
+                    recovery_target=1,require_recovery_target=False)
+        config_path=setup_root/'boundary_configs'/f'{seed}.json';write(config_path,config)
         subprocess.run([__import__('sys').executable,'-m','recovery_experiment.rounds','collect-recovery',
                         '--config',str(config_path),'--output',str(eval_out)],check=True,cwd=root)
         source=eval_out/'snapshots'/f'recovery_{seed}.npz'
         if not source.exists():
-            write(out/'evaluation_initials'/f'{seed}_excluded.json',dict(reason='no_validated_boundary_setup'))
+            write(setup_root/'evaluation_initials'/f'{seed}_excluded.json',dict(reason='no_validated_boundary_setup'))
             return None
         import shutil
         path.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,path)

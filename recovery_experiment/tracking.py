@@ -4,7 +4,16 @@ import hashlib
 import json
 import os
 import socket
+import tempfile
 from pathlib import Path
+
+
+def require_local_socket():
+    # AF_UNIX paths are limited to roughly 108 bytes. Experiment output paths
+    # can exceed that, so keep the probe in a short temporary directory.
+    with tempfile.TemporaryDirectory(prefix='wb-probe-') as directory:
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as probe:
+            probe.bind(str(Path(directory)/'s'))
 
 
 class Tracker:
@@ -22,9 +31,7 @@ class Tracker:
                 raise RuntimeError('WandB disabled explicitly by configuration')
             # wandb-core needs a local socket even in offline mode. Diagnose this
             # before launching a service that cannot start in this sandbox.
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-                probe.bind(str(self.root/'.wandb-socket-check'))
-            (self.root/'.wandb-socket-check').unlink()
+            require_local_socket()
             for key in ['WANDB_DIR','WANDB_CACHE_DIR','WANDB_CONFIG_DIR','WANDB_DATA_DIR']:
                 location = self.root/'wandb_runtime'/key.lower()
                 location.mkdir(parents=True,exist_ok=True)
@@ -40,6 +47,7 @@ class Tracker:
         except Exception as error:
             status['error'] = f'{type(error).__name__}: {error}'
             if not settings.get('allow_local_fallback',True):
+                (self.root/'tracking_status.json').write_text(json.dumps(status,indent=2)+'\n')
                 raise
         (self.root/'tracking_status.json').write_text(json.dumps(status,indent=2)+'\n')
         print('tracking', name, status, flush=True)

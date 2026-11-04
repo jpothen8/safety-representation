@@ -1,0 +1,165 @@
+{
+  "reference": "https://github.com/jpothen8/LeRobot-SafetyCubes",
+  "reference_commit": "c81ebec7f8113cbf4616ef7c055b22b148ec3135",
+  "modules": {
+    "env.py": {
+      "identical": true,
+      "local_sha256": "971dd66d01393aab19b6fd256d65d9c01269246aaebb3ff1f7370b536ee97a87",
+      "reference_sha256": "971dd66d01393aab19b6fd256d65d9c01269246aaebb3ff1f7370b536ee97a87"
+    },
+    "scene.py": {
+      "identical": true,
+      "local_sha256": "d03371df737763d4cf518d36a604ba396f2b7a64bf2d21d96b3dfc46bd8974db",
+      "reference_sha256": "d03371df737763d4cf518d36a604ba396f2b7a64bf2d21d96b3dfc46bd8974db"
+    },
+    "expert.py": {
+      "identical": true,
+      "local_sha256": "5f7f1a140bc75db359303ef7d25df83e788d7920af79cf48e771971feee509f2",
+      "reference_sha256": "5f7f1a140bc75db359303ef7d25df83e788d7920af79cf48e771971feee509f2"
+    },
+    "randomize.py": {
+      "identical": true,
+      "local_sha256": "ebe0a8310180c9e052f7d50e23b0cdee2328dea2a7c7ce9a3ab493c6a4ec8294",
+      "reference_sha256": "ebe0a8310180c9e052f7d50e23b0cdee2328dea2a7c7ce9a3ab493c6a4ec8294"
+    },
+    "_draccus_compat.py": {
+      "identical": true,
+      "local_sha256": "94219971c2acd36c78a496f5244931dadab423718bcddec6f35ad5c0224e9233",
+      "reference_sha256": "94219971c2acd36c78a496f5244931dadab423718bcddec6f35ad5c0224e9233"
+    }
+  },
+  "assets": {
+    "README.md": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "5ef415471a9f708f0e6a71c03eb668c80eafd154adbf9cec2a5d219b4552c7b0",
+      "reference_sha256": "5ef415471a9f708f0e6a71c03eb668c80eafd154adbf9cec2a5d219b4552c7b0"
+    },
+    "collision_spheres.json": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "fd9bc93a0f59f24b79e785674c560e11060b8c0ec8f970253a7df62715c8c88c",
+      "reference_sha256": "fd9bc93a0f59f24b79e785674c560e11060b8c0ec8f970253a7df62715c8c88c"
+    },
+    "so101/assets/base_motor_holder_so101_v1.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "8cd2f241037ea377af1191fffe0dd9d9006beea6dcc48543660ed41647072424",
+      "reference_sha256": "8cd2f241037ea377af1191fffe0dd9d9006beea6dcc48543660ed41647072424"
+    },
+    "so101/assets/base_so101_v2.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "bb12b7026575e1f70ccc7240051f9d943553bf34e5128537de6cd86fae33924d",
+      "reference_sha256": "bb12b7026575e1f70ccc7240051f9d943553bf34e5128537de6cd86fae33924d"
+    },
+    "so101/assets/motor_holder_so101_base_v1.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "31242ae6fb59d8b15c66617b88ad8e9bded62d57c35d11c0c43a70d2f4caa95b",
+      "reference_sha256": "31242ae6fb59d8b15c66617b88ad8e9bded62d57c35d11c0c43a70d2f4caa95b"
+    },
+    "so101/assets/motor_holder_so101_wrist_v1.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "887f92e6013cb64ea3a1ab8675e92da1e0beacfd5e001f972523540545e08011",
+      "reference_sha256": "887f92e6013cb64ea3a1ab8675e92da1e0beacfd5e001f972523540545e08011"
+    },
+    "so101/assets/moving_jaw_so101_v1.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "785a9dded2f474bc1d869e0d3dae398a3dcd9c0c345640040472210d2861fa9d",
+      "reference_sha256": "785a9dded2f474bc1d869e0d3dae398a3dcd9c0c345640040472210d2861fa9d"
+    },
+    "so101/assets/rotation_pitch_so101_v1.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "9be900cc2a2bf718102841ef82ef8d2873842427648092c8ed2ca1e2ef4ffa34",
+      "reference_sha256": "9be900cc2a2bf718102841ef82ef8d2873842427648092c8ed2ca1e2ef4ffa34"
+    },
+    "so101/assets/sts3215_03a_no_horn_v1.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "75ef3781b752e4065891aea855e34dc161a38a549549cd0970cedd07eae6f887",
+      "reference_sha256": "75ef3781b752e4065891aea855e34dc161a38a549549cd0970cedd07eae6f887"
+    },
+    "so101/assets/sts3215_03a_v1.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "a37c871fb502483ab96c256baf457d36f2e97afc9205313d9c5ab275ef941cd0",
+      "reference_sha256": "a37c871fb502483ab96c256baf457d36f2e97afc9205313d9c5ab275ef941cd0"
+    },
+    "so101/assets/under_arm_so101_v1.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "d01d1f2de365651dcad9d6669e94ff87ff7652b5bb2d10752a66a456a86dbc71",
+      "reference_sha256": "d01d1f2de365651dcad9d6669e94ff87ff7652b5bb2d10752a66a456a86dbc71"
+    },
+    "so101/assets/upper_arm_so101_v1.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "475056e03a17e71919b82fd88ab9a0b898ab50164f2a7943652a6b2941bb2d4f",
+      "reference_sha256": "475056e03a17e71919b82fd88ab9a0b898ab50164f2a7943652a6b2941bb2d4f"
+    },
+    "so101/assets/waveshare_mounting_plate_so101_v2.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "e197e24005a07d01bbc06a8c42311664eaeda415bf859f68fa247884d0f1a6e9",
+      "reference_sha256": "e197e24005a07d01bbc06a8c42311664eaeda415bf859f68fa247884d0f1a6e9"
+    },
+    "so101/assets/wrist_roll_follower_so101_v1.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "4b17b410a12d64ec39554abc3e8054d8a97384b2dc4a8d95a5ecb2a93670f5f4",
+      "reference_sha256": "4b17b410a12d64ec39554abc3e8054d8a97384b2dc4a8d95a5ecb2a93670f5f4"
+    },
+    "so101/assets/wrist_roll_pitch_so101_v2.stl": {
+      "byte_identical": true,
+      "semantic_identical": true,
+      "local_sha256": "6c7ec5525b4d8b9e397a30ab4bb0037156a5d5f38a4adf2c7d943d6c56eda5ae",
+      "reference_sha256": "6c7ec5525b4d8b9e397a30ab4bb0037156a5d5f38a4adf2c7d943d6c56eda5ae"
+    },
+    "so101/so101_new_calib.urdf": {
+      "byte_identical": false,
+      "semantic_identical": true,
+      "local_sha256": "11444c3ac7a174f7efd3560c03d2de8aa01a48f28df8b1506eb096c0a81b7f4e",
+      "reference_sha256": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c"
+    }
+  },
+  "defaults_identical_except_asset_path": true,
+  "expert_rollout": {
+    "seed": 9400,
+    "control_steps": 270,
+    "max_qpos_difference": 0.0,
+    "max_action_difference": 0.0,
+    "camera_pixel_mean_absolute_difference": 0.0,
+    "local_stats": {
+      "steps": 270,
+      "red_contact": false,
+      "ceiling_violation": false,
+      "fly_over": false,
+      "blue_dropped": false,
+      "success": true,
+      "dwell": 5,
+      "min_clearance": 0.014175483414090076,
+      "closest_red_idx": 2
+    },
+    "reference_stats": {
+      "steps": 270,
+      "red_contact": false,
+      "ceiling_violation": false,
+      "fly_over": false,
+      "blue_dropped": false,
+      "success": true,
+      "dwell": 5,
+      "min_clearance": 0.014175483414090076,
+      "closest_red_idx": 2
+    }
+  },
+  "passed": true,
+  "scope": "Complete task runtime, expert, configuration and every asset; unrelated policy/safety-loss training scaffolding is not part of the task port.",
+  "configuration_sha256": {
+    "local": "3f2eb1d98c0c9ae3d49f16947530f4b5df9054c96d798ad31cd50b0c3c7bc3f5",
+    "reference": "48a1a900aea3bcfdb706d15ab504d1f6491921fe88c4d74c17066861aacdf3f4"
+  }
+}

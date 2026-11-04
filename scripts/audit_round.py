@@ -17,7 +17,7 @@ for path in sorted((out/'data').glob('*.json')):
             for key in ['image','wrist_image']:assert (d[key].std(axis=(1,2,3))>1).all()
         if m['kind']=='recovery':
             assert .002<=m['collision_margin']<=.015
-            assert m['source']=='expert_carry_executed_xy_perturbation'
+            assert m['source']==('expert_carry_executed_xy_perturbation' if m.get('perturb_actions') else 'natural_near_boundary_expert')
             assert m['supervised_start']>0 and m['margin_improved']
     manifest.append(m)
 (out/'data_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')

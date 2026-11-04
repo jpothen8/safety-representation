@@ -56,7 +56,7 @@ The launcher forces headless EGL, removes DISPLAY, logs through `tee`, and preve
 
 ## Near-collision recoveries
 
-Candidates are generated from physically executed XY perturbations of grasped expert carry states. The nearest prohibited pair's **MuJoCo geometry distance** must be between configurable 2 and 15 mm; this is not a height-only scene or a point-at-TCP proxy. Height remains monitored as an environment constraint. No qpos teleport is used to produce perturbations. Simulation snapshots include the magnetic-grip state.
+The full experiment generates candidates through physically executed, clearance-reducing XY perturbations of grasped expert carry states. The earlier pilot also accepted naturally near-boundary expert states; metadata now distinguishes those from perturbed recovery states. The nearest prohibited pair's **MuJoCo geometry distance** must be between configurable 2 and 15 mm; this is not a height-only scene or a point-at-TCP proxy. Height remains monitored as an environment constraint. No qpos teleport is used to produce perturbations. Simulation snapshots include the magnetic-grip state.
 
 The expert replans from the actual perturbed state and completes the task. A suffix is accepted only if the perturbation and continuation avoid collision/ceiling violations, the task succeeds, actual collision margin improves, and at least a full 56-action target is available. Failed candidates and attempts are retained as metadata and excluded from training. The pilot uses controlled expert-state perturbations; it does not claim successful policy-scout mining. Wider on-policy scout rounds can use the planning-boundary mechanism retained in the legacy collector.
 
@@ -100,3 +100,9 @@ scripts/publish_github.sh
 ```
 
 The script verifies the authenticated account, refuses an existing repository, commits explicit source paths and pushes without force. Data, model weights, logs, credentials and videos stay outside Git. Git metadata is stored under `.publication/git` because the tool workspace's `.git` directory is managed read-only. Set `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` to override the default username/noreply author. Successful publication must be verified from the returned repository URL; preparing this script is not publication.
+
+## Full experiment and verified expert preview
+
+The [full experiment plan](FULL_EXPERIMENT.md) specifies three training seeds, 150 initial expert successes, 150 additional expert successes, 50 recovery demonstrations and paired held-out evaluation. It uses cached temporal windows and true batched forwards for GPU training. Start it from the native server shell with `scripts/start_full.sh`.
+
+A new [expert-only two-camera video](artifacts/expert_preview/expert_seed9400.mp4) is available. The [complete source/asset/rollout audit](docs/port_audit.json) found identical actions, physics states, camera pixels and outcomes across a full 270-step local/reference episode. Reproduce with `scripts/record_expert.py` and `scripts/audit_port.py` using the installed Python environment.
